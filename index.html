@@ -90,7 +90,70 @@ async function queuePunch(item){const db=await openPunchDB();return new Promise(
 async function getQueuedPunches(){const db=await openPunchDB();return new Promise((resolve,reject)=>{const tx=db.transaction(PUNCH_STORE,"readonly");const req=tx.objectStore(PUNCH_STORE).getAll();req.onsuccess=()=>{db.close();resolve(req.result||[]);};req.onerror=()=>{db.close();reject(req.error);};});}
 async function removeQueuedPunch(id){const db=await openPunchDB();return new Promise((resolve,reject)=>{const tx=db.transaction(PUNCH_STORE,"readwrite");tx.objectStore(PUNCH_STORE).delete(id);tx.oncomplete=()=>{db.close();resolve();};tx.onerror=()=>{db.close();reject(tx.error);};});}
 function newPunchId(){return (crypto.randomUUID?crypto.randomUUID():"BP-"+Date.now()+"-"+Math.random().toString(16).slice(2));}
-async function syncQueue(){if(syncBusy||!navigator.onLine)return;syncBusy=true;try{const items=await getQueuedPunches();if(!items.length){setSyncBadge("Sync status: All caught up","synced");return;}setSyncBadge("Syncing "+items.length+" pending punch(es)...","pending");for(const item of items){if(item.status==="REJECTED")continue;if(!Number.isFinite(item.latitude)||!Number.isFinite(item.longitude))continue;try{const r=await api({action:"devicePunch",deviceId:item.deviceId,latitude:item.latitude,longitude:item.longitude,punchId:item.punchId,clientTime:item.createdAt,punchAction:item.punchAction||"PUNCH"});if(r&&r.success){await removeQueuedPunch(item.punchId);setSyncBadge(r.offlinePendingReview?"SYNCED – ADMIN REVIEW REQUIRED":"SYNCED ✓ "+r.punch,r.offlinePendingReview?"pending":"synced");msg("✅ "+esc(r.message||"Attendance synced.")+(r.distance!==undefined?"<br>📍 Distance: "+esc(r.distance)+" meter":"")+"<br><small>Google Sheet sync successful.</small>");}else{item.status="REJECTED";item.error=(r&&r.message)||"Server rejected punch";await queuePunch(item);setSyncBadge("Punch rejected – Admin check required","failed");msg("❌ Attendance server ne accept nahi ki: "+esc(item.error));}}catch(e){setSyncBadge("PENDING SYNC – Network retry required","pending");break;}}}catch(e){console.error(e);setSyncBadge("Local queue unavailable – do not punch again","failed");}finally{syncBusy=false;}}
+function getFreshGPS(){
+  return new Promise((resolve,reject)=>{
+    if(!navigator.geolocation){reject(new Error("Location service available nahi hai."));return;}
+    navigator.geolocation.getCurrentPosition(
+      p=>resolve({latitude:p.coords.latitude,longitude:p.coords.longitude,accuracy:p.coords.accuracy}),
+      e=>reject(new Error(e.message||"GPS location nahi mili.")),
+      {enableHighAccuracy:true,timeout:20000,maximumAge:0}
+    );
+  });
+}
+async function syncQueue(){
+  if(syncBusy||!navigator.onLine)return;
+  syncBusy=true;
+  try{
+    const items=await getQueuedPunches();
+    if(!items.length){setSyncBadge("Sync status: All caught up","synced");return;}
+    setSyncBadge("Checking "+items.length+" pending punch(es)...","pending");
+    for(const item of items){
+      if(item.status==="REJECTED")continue;
+      try{
+        // GPS fail hone par wahi pending Punch ID dobara GPS lega; naya punch create nahi hoga.
+        if(!Number.isFinite(item.latitude)||!Number.isFinite(item.longitude)){
+          setSyncBadge("Pending punch ke liye GPS liya ja raha hai...","pending");
+          const gps=await getFreshGPS();
+          item.latitude=gps.latitude;
+          item.longitude=gps.longitude;
+          item.accuracy=gps.accuracy;
+          item.status="PENDING";
+          item.error="";
+          await queuePunch(item);
+        }
+        if(!navigator.onLine){setSyncBadge("PENDING SYNC – Network retry required","pending");break;}
+        setSyncBadge("Syncing pending punch...","pending");
+        const r=await api({
+          action:"devicePunch",deviceId:item.deviceId,
+          latitude:item.latitude,longitude:item.longitude,
+          punchId:item.punchId,clientTime:item.createdAt,
+          punchAction:item.punchAction||"PUNCH"
+        });
+        if(r&&r.success){
+          await removeQueuedPunch(item.punchId);
+          setSyncBadge(r.offlinePendingReview?"SYNCED – ADMIN REVIEW REQUIRED":"SYNCED ✓ "+r.punch,r.offlinePendingReview?"pending":"synced");
+          msg("✅ "+esc(r.message||"Attendance synced.")+(r.distance!==undefined?"<br>📍 Distance: "+esc(r.distance)+" meter":"")+"<br><small>Google Sheet sync successful.</small>");
+        }else{
+          item.status="REJECTED";
+          item.error=(r&&r.message)||"Server rejected punch";
+          await queuePunch(item);
+          setSyncBadge("Punch rejected – Admin check required","failed");
+          msg("❌ Attendance server ne accept nahi ki: "+esc(item.error));
+        }
+      }catch(e){
+        item.status="WAITING_FOR_GPS";
+        item.error=e.message||"GPS / network retry required";
+        if(!Number.isFinite(item.latitude)||!Number.isFinite(item.longitude))await queuePunch(item);
+        setSyncBadge("PENDING – GPS / Network retry required","pending");
+        msg("⚠️ Punch abhi mobile mein pending hai. Location ON karke app khula rakhein; abhi Attendance confirmed nahi hai.");
+        break;
+      }
+    }
+  }catch(e){
+    console.error(e);
+    setSyncBadge("Local queue unavailable – do not punch again","failed");
+  }finally{syncBusy=false;}
+}
 window.addEventListener("online",()=>syncQueue());document.addEventListener("visibilitychange",()=>{if(!document.hidden)syncQueue();});
 function msg(x){document.getElementById("message").innerHTML=x;}
 function esc(v){return String(v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
@@ -138,14 +201,32 @@ catch(e){msg("❌ Registration connection error<br>"+esc(e.message||e));}finally
 async function punchWithGPS(){
   const id=pendingDeviceId||deviceId();
   const item={punchId:newPunchId(),deviceId:id,createdAt:new Date().toISOString(),punchAction:selectedPunchAction,latitude:null,longitude:null,status:"WAITING_FOR_GPS"};
-  try{await queuePunch(item);setSyncBadge("PUNCH SAVED LOCALLY – GPS check pending","pending");msg("💾 Punch mobile mein save ho gaya. Location aur server verification ho rahi hai...");}
-  catch(e){busy=false;msg("❌ Mobile local storage available nahi. Attendance punch nahi liya gaya.");restartLater();return;}
-  if(!navigator.geolocation){item.status="REJECTED";item.error="Location service unavailable";await queuePunch(item);busy=false;msg("❌ Location service available nahi. Punch Pending/Rejected hai; confirmed nahi.");setSyncBadge("PENDING – Location unavailable","failed");restartLater();return;}
-  navigator.geolocation.getCurrentPosition(async p=>{
-    try{item.latitude=p.coords.latitude;item.longitude=p.coords.longitude;item.accuracy=p.coords.accuracy;item.status="PENDING";await queuePunch(item);setSyncBadge("PENDING SYNC – Server verification baaki","pending");msg("💾 Punch saved locally. Server verification shuru...");if(navigator.onLine)await syncQueue();else msg("💾 PENDING SYNC. Internet aate hi bheja jayega.");}
-    catch(e){setSyncBadge("PENDING SYNC – Local queue error","failed");msg("❌ Punch local queue update nahi hua: "+esc(e.message||e));}
-    finally{pendingDeviceId="";busy=false;restartLater();}
-  },async e=>{item.status="WAITING_FOR_GPS";item.error=e.message||"GPS unavailable";await queuePunch(item);setSyncBadge("PENDING – GPS required","pending");msg("⚠️ Punch local mein save hai, lekin GPS verify nahi hua. Location ON karke Restart Camera karein. Abhi Attendance confirmed nahi hai.");pendingDeviceId="";busy=false;restartLater();},{enableHighAccuracy:true,timeout:12000,maximumAge:0});
+  try{
+    await queuePunch(item);
+    setSyncBadge("PUNCH SAVED LOCALLY – GPS check pending","pending");
+    msg("💾 Punch mobile mein save ho gaya. GPS verify ho raha hai...");
+    const gps=await getFreshGPS();
+    item.latitude=gps.latitude;
+    item.longitude=gps.longitude;
+    item.accuracy=gps.accuracy;
+    item.status="PENDING";
+    item.error="";
+    await queuePunch(item);
+    setSyncBadge("PENDING SYNC – Server verification baaki","pending");
+    msg("💾 GPS mil gaya. Server verification shuru...");
+    if(navigator.onLine)await syncQueue();
+    else msg("💾 PENDING SYNC. Internet aate hi bheja jayega.");
+  }catch(e){
+    item.status="WAITING_FOR_GPS";
+    item.error=e.message||"GPS unavailable";
+    try{await queuePunch(item);}catch(saveError){}
+    setSyncBadge("PENDING – GPS required","pending");
+    msg("⚠️ Punch mobile mein surakshit pending hai, lekin GPS / server verify nahi hua. Location ON karke Restart Camera karein. Abhi Attendance confirmed nahi hai.");
+  }finally{
+    pendingDeviceId="";
+    busy=false;
+    restartLater();
+  }
 }
 function openAdminAuth(afterScan){pendingDeviceId=pendingDeviceId||deviceId();forceRegistration=!!afterScan;document.getElementById("adminPanel").style.display="block";document.getElementById("registerPanel").style.display="none";document.getElementById("adminPin").value="";msg("🔐 Registration ke liye Admin PIN verify karein.");document.getElementById("adminPin").focus();}
 function cancelAdminAuth(){document.getElementById("adminPanel").style.display="none";forceRegistration=false;pendingDeviceId="";busy=false;msg("Admin verification cancel hua.");restartLater();}
