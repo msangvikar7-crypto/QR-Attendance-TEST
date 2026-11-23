@@ -66,7 +66,7 @@ button:active{transform:translateY(1px);filter:brightness(.96)}.secondary{backgr
 <main class="app-main">
 <div id="reader"></div>
 <div id="syncBadge">Sync status: Ready</div>
-<div class="action-select" style="max-width:620px;margin:10px auto;padding:12px;background:#fff;border:1px solid #c7dff2;border-radius:16px"><div style="font-weight:800;margin-bottom:8px">Punch Action</div><button type="button" id="normalPunchBtn" onclick="setPunchAction('PUNCH')">IN / OUT</button><button type="button" id="finalPunchBtn" class="secondary" onclick="setPunchAction('FINAL_OUT')">FINAL OUT</button><div class="small" id="actionHint">IN / OUT: pehla IN, phir break ke liye OUT aur wapas aane par IN.</div></div><div id="message">Camera start ho raha hai...<div class="small">Camera aur Location permission Allow karein.</div></div>
+<div id="message">Camera start ho raha hai...<div class="small">Camera aur Location permission Allow karein.</div></div>
 <div id="adminPanel"><label for="adminPin">Admin PIN (4 digits)</label><input id="adminPin" type="password" inputmode="numeric" maxlength="4" autocomplete="off" placeholder="••••"><div class="small">Sirf authorized Admin ka PIN. PIN screen par hidden rahega.</div><div id="adminActions"><button class="secondary" type="button" onclick="cancelAdminAuth()">Cancel</button><button type="button" onclick="submitAdminPin()">Verify Admin</button></div></div>
 <div id="registerPanel"><label for="employeeId">Admin: Employee ID / Employee Number</label>
 <input id="employeeId" type="text" autocomplete="off" placeholder="Example: EMP001">
@@ -82,8 +82,6 @@ const APPS_SCRIPT_URL="https://script.google.com/macros/s/AKfycbyIYKRTDXlg7A7i8f
 const MASTER_QR_TEXT="MASTER_REGISTER", DEVICE_STORAGE_KEY="QR_DEVICE_ID", DEVICE_VERIFIED_KEY="QR_DEVICE_VERIFIED";
 const PUNCH_DB_NAME="BP_Attendance_Queue_TEST_V2", PUNCH_STORE="punches"; // TEST V2: isolates old pending punches
 let scanner=null,scannerRunning=false,busy=false,callbackCounter=0,forceRegistration=false,pendingDeviceId="",adminToken="",syncBusy=false;
-let selectedPunchAction=localStorage.getItem("BP_SELECTED_PUNCH_ACTION")||"PUNCH";
-function setPunchAction(a){selectedPunchAction=a==="FINAL_OUT"?"FINAL_OUT":"PUNCH";localStorage.setItem("BP_SELECTED_PUNCH_ACTION",selectedPunchAction);document.getElementById("normalPunchBtn").className=selectedPunchAction==="PUNCH"?"":"secondary";document.getElementById("finalPunchBtn").className=selectedPunchAction==="FINAL_OUT"?"":"secondary";document.getElementById("actionHint").textContent=selectedPunchAction==="FINAL_OUT"?"FINAL OUT: aaj ki duty permanently close hogi.":"IN / OUT: pehla IN, phir break ke liye OUT aur wapas aane par IN.";}
 function setSyncBadge(text,cls){const el=document.getElementById("syncBadge");el.textContent=text;el.className=cls||"";}
 function openPunchDB(){return new Promise((resolve,reject)=>{const req=indexedDB.open(PUNCH_DB_NAME,1);req.onupgradeneeded=()=>{const db=req.result;if(!db.objectStoreNames.contains(PUNCH_STORE))db.createObjectStore(PUNCH_STORE,{keyPath:"punchId"});};req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);});}
 async function queuePunch(item){const db=await openPunchDB();return new Promise((resolve,reject)=>{const tx=db.transaction(PUNCH_STORE,"readwrite");tx.objectStore(PUNCH_STORE).put(item);tx.oncomplete=()=>{db.close();resolve();};tx.onerror=()=>{db.close();reject(tx.error);};});}
@@ -200,7 +198,7 @@ try{const r=await api({action:"register",employeeId:emp,deviceId:pendingDeviceId
 catch(e){msg("❌ Registration connection error<br>"+esc(e.message||e));}finally{buttons.forEach(b=>b.disabled=false);}}
 async function punchWithGPS(){
   const id=pendingDeviceId||deviceId();
-  const item={punchId:newPunchId(),deviceId:id,createdAt:new Date().toISOString(),punchAction:selectedPunchAction,latitude:null,longitude:null,status:"WAITING_FOR_GPS"};
+  const item={punchId:newPunchId(),deviceId:id,createdAt:new Date().toISOString(),latitude:null,longitude:null,status:"WAITING_FOR_GPS"};
   try{
     await queuePunch(item);
     setSyncBadge("PUNCH SAVED LOCALLY – GPS check pending","pending");
@@ -233,5 +231,5 @@ function cancelAdminAuth(){document.getElementById("adminPanel").style.display="
 async function submitAdminPin(){const pin=document.getElementById("adminPin").value.trim();if(!/^\d{4}$/.test(pin)){msg("❌ 4 digit PIN enter karein.");return;}const btns=document.querySelectorAll("#adminActions button");btns.forEach(b=>b.disabled=true);try{const ch=await api({action:"adminChallenge",deviceId:pendingDeviceId||deviceId()});if(!ch?.success)throw Error(ch?.message||"Challenge failed");const raw=pin+"|"+ch.nonce+"|"+(pendingDeviceId||deviceId());const digest=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(raw));const proof=Array.from(new Uint8Array(digest)).map(b=>b.toString(16).padStart(2,"0")).join("");const r=await api({action:"adminAuthorize",deviceId:pendingDeviceId||deviceId(),proof:proof});if(!r?.success)throw Error(r?.message||"Admin verification failed");adminToken=r.adminToken;document.getElementById("adminPanel").style.display="none";document.getElementById("adminPin").value="";if(forceRegistration){busy=false;msg("✅ Admin verified. Ab Master QR scan karein.");await startCamera();}else{busy=false;showRegistration();}}catch(e){msg("❌ "+esc(e.message||e));}finally{btns.forEach(b=>b.disabled=false);}}
 async function armChangeRegistration(){forceRegistration=true;await stopCamera();openAdminAuth(true);msg("🔐 Admin PIN verify karein. Uske baad Master QR scan karein.");}
 function restartLater(){setTimeout(()=>{if(!busy&&document.getElementById("registerPanel").style.display!=="block")startCamera();},3500);}
-window.addEventListener("load",()=>{setPunchAction(selectedPunchAction);syncQueue();startCamera();});
+window.addEventListener("load",()=>{syncQueue();startCamera();});
 </script></body></html>
