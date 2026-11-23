@@ -72,7 +72,7 @@ button:active{transform:translateY(1px);filter:brightness(.96)}.secondary{backgr
 <input id="employeeId" type="text" autocomplete="off" placeholder="Example: EMP001">
 <div class="small">OK karne par is mobile ki Device ID is Employee ke saath register / reassign hogi.</div>
 <div id="registerActions"><button class="secondary" type="button" onclick="cancelRegistration()">Cancel</button><button type="button" onclick="submitRegistration()">OK – Register Mobile</button></div></div>
-<div><button id="restartButton" type="button" onclick="startCamera()">Restart Camera</button>
+<div><button id="restartButton" type="button" onclick="restartCamera()">Restart Camera</button>
 <button class="secondary" type="button" onclick="armChangeRegistration()">Register / Change Mobile</button></div>
 <div class="small footer-note">Pehla IN se duty start. Beech mein IN/OUT se break record hoga. Duty khatam karte waqt FINAL OUT select karein. Break time working hours se ghatega. Mobile change ke liye Admin PIN zaroori hai.</div>
 </main>
@@ -81,7 +81,7 @@ button:active{transform:translateY(1px);filter:brightness(.96)}.secondary{backgr
 const APPS_SCRIPT_URL="https://script.google.com/macros/s/AKfycbyIYKRTDXlg7A7i8fHorGqV0XwW7WwATgRIv2CgYBTTXT8Rg7o0qkcggfCeytSVptXl-w/exec";
 const MASTER_QR_TEXT="MASTER_REGISTER", DEVICE_STORAGE_KEY="QR_DEVICE_ID", DEVICE_VERIFIED_KEY="QR_DEVICE_VERIFIED";
 const PUNCH_DB_NAME="BP_Attendance_Queue_TEST_V2", PUNCH_STORE="punches"; // TEST V2: isolates old pending punches
-let scanner=null,scannerRunning=false,busy=false,callbackCounter=0,forceRegistration=false,pendingDeviceId="",adminToken="",syncBusy=false;
+let scanner=null,scannerRunning=false,busy=false,callbackCounter=0,forceRegistration=false,pendingDeviceId="",adminToken="",syncBusy=false,syncAgain=false;
 function setSyncBadge(text,cls){const el=document.getElementById("syncBadge");el.textContent=text;el.className=cls||"";}
 function openPunchDB(){return new Promise((resolve,reject)=>{const req=indexedDB.open(PUNCH_DB_NAME,1);req.onupgradeneeded=()=>{const db=req.result;if(!db.objectStoreNames.contains(PUNCH_STORE))db.createObjectStore(PUNCH_STORE,{keyPath:"punchId"});};req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);});}
 async function queuePunch(item){const db=await openPunchDB();return new Promise((resolve,reject)=>{const tx=db.transaction(PUNCH_STORE,"readwrite");tx.objectStore(PUNCH_STORE).put(item);tx.oncomplete=()=>{db.close();resolve();};tx.onerror=()=>{db.close();reject(tx.error);};});}
@@ -99,8 +99,10 @@ function getFreshGPS(){
   });
 }
 async function syncQueue(){
-  if(syncBusy||!navigator.onLine)return;
+  if(!navigator.onLine)return;
+  if(syncBusy){syncAgain=true;return;}
   syncBusy=true;
+  syncAgain=false;
   try{
     const items=await getQueuedPunches();
     if(!items.length){setSyncBadge("Sync status: All caught up","synced");return;}
@@ -150,7 +152,10 @@ async function syncQueue(){
   }catch(e){
     console.error(e);
     setSyncBadge("Local queue unavailable – do not punch again","failed");
-  }finally{syncBusy=false;}
+  }finally{
+    syncBusy=false;
+    if(syncAgain&&navigator.onLine){syncAgain=false;setTimeout(()=>syncQueue(),250);}
+  }
 }
 window.addEventListener("online",()=>syncQueue());document.addEventListener("visibilitychange",()=>{if(!document.hidden)syncQueue();});
 function msg(x){document.getElementById("message").innerHTML=x;}
@@ -160,14 +165,48 @@ function api(params){return new Promise((resolve,reject)=>{const cb="bpCallback"
 const clean=()=>{if(done)return;done=true;clearTimeout(timer);s.remove();try{delete window[cb];}catch(e){window[cb]=undefined;}};
 const timer=setTimeout(()=>{clean();reject(new Error("Apps Script response timeout."));},25000);window[cb]=d=>{clean();resolve(d);};
 const q=new URLSearchParams(params);q.set("callback",cb);q.set("_",Date.now());s.onerror=()=>{clean();reject(new Error("Apps Script request load nahi hui. URL / access check karein."));};s.src=APPS_SCRIPT_URL+"?"+q.toString();document.head.appendChild(s);});}
-async function startCamera(){if(scannerRunning)return;if(busy){msg("⏳ Pichhla action complete ho raha hai. Thodi der baad Restart Camera dabayein.");return;}document.getElementById("restartButton").disabled=true;try{
-msg("📷 Camera permission check ho rahi hai...");if(!navigator.mediaDevices?.getUserMedia)throw Error("Camera ke liye HTTPS zaroori hai.");if(typeof Html5Qrcode==="undefined")throw Error("QR library load nahi hui.");
-const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"}},audio:false});stream.getTracks().forEach(t=>t.stop());
-const cams=await Html5Qrcode.getCameras();if(!cams.length)throw Error("Camera detect nahi hua.");let cam=cams[0].id;for(const c of cams){const l=(c.label||"").toLowerCase();if(/back|rear|environment/.test(l)){cam=c.id;break;}}
-document.getElementById("reader").innerHTML="";scanner=new Html5Qrcode("reader");await scanner.start(cam,{fps:10,qrbox:(w,h)=>{let z=Math.max(180,Math.min(300,Math.floor(Math.min(w,h)*.65)));return{width:z,height:z};}},onScan,()=>{});
-scannerRunning=true;msg("📷 Camera ready hai.<br>Admin Master QR camera ke saamne rakhiye.");
-}catch(e){console.error(e);msg("❌ Camera start nahi hua<br>"+esc(e.message||e));}finally{document.getElementById("restartButton").disabled=false;}}
-async function stopCamera(){if(scanner&&scannerRunning){try{await scanner.stop();}catch(e){}try{await scanner.clear();}catch(e){}}scannerRunning=false;}
+async function startCamera(){
+if(scannerRunning)return;
+if(busy){msg("⏳ Pichhla action complete ho raha hai. Thodi der baad Restart Camera dabayein.");return;}
+const restartBtn=document.getElementById("restartButton");
+if(restartBtn)restartBtn.disabled=true;
+try{
+msg("📷 Camera permission check ho rahi hai...");
+if(!navigator.mediaDevices?.getUserMedia)throw Error("Camera ke liye HTTPS zaroori hai.");
+if(typeof Html5Qrcode==="undefined")throw Error("QR library load nahi hui.");
+const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"}},audio:false});
+stream.getTracks().forEach(t=>t.stop());
+const cams=await Html5Qrcode.getCameras();
+if(!cams.length)throw Error("Camera detect nahi hua.");
+let cam=cams[0].id;
+for(const c of cams){const l=(c.label||"").toLowerCase();if(/back|rear|environment/.test(l)){cam=c.id;break;}}
+document.getElementById("reader").innerHTML="";
+scanner=new Html5Qrcode("reader");
+await scanner.start(cam,{fps:10,qrbox:(w,h)=>{let z=Math.max(180,Math.min(300,Math.floor(Math.min(w,h)*.65)));return{width:z,height:z};}},onScan,()=>{});
+scannerRunning=true;
+msg("📷 Camera ready hai.<br>Admin Master QR camera ke saamne rakhiye.");
+}catch(e){console.error(e);msg("❌ Camera start nahi hua<br>"+esc(e.message||e));}
+finally{if(restartBtn)restartBtn.disabled=false;}
+}
+async function stopCamera(){
+  const oldScanner=scanner;
+  scannerRunning=false;
+  scanner=null;
+  if(oldScanner){
+    try{await oldScanner.stop();}catch(e){}
+    try{await oldScanner.clear();}catch(e){}
+  }
+}
+async function restartCamera(){
+  if(busy){msg("⏳ Punch process chal raha hai. Complete hone ke baad camera restart karein.");return;}
+  const restartBtn=document.getElementById("restartButton");
+  if(restartBtn)restartBtn.disabled=true;
+  try{
+    await stopCamera();
+    await new Promise(resolve=>setTimeout(resolve,250));
+    await startCamera();
+  }finally{if(restartBtn)restartBtn.disabled=false;}
+}
 async function onScan(text){if(!scannerRunning||busy)return;if(String(text||"").trim()!==MASTER_QR_TEXT){msg("⚠️ Yeh Admin Master QR nahi hai. Wahi Master QR scan karein.");return;}
 busy=true;await stopCamera();pendingDeviceId=deviceId();if(forceRegistration){forceRegistration=false;showRegistration();return;}
   // Offline mode: only queue locally if this device was previously verified as registered online.
