@@ -80,7 +80,7 @@ button:active{transform:translateY(1px);filter:brightness(.96)}.secondary{backgr
 "use strict";
 const APPS_SCRIPT_URL="https://script.google.com/macros/s/AKfycbyIYKRTDXlg7A7i8fHorGqV0XwW7WwATgRIv2CgYBTTXT8Rg7o0qkcggfCeytSVptXl-w/exec";
 const MASTER_QR_TEXT="MASTER_REGISTER", DEVICE_STORAGE_KEY="QR_DEVICE_ID", DEVICE_VERIFIED_KEY="QR_DEVICE_VERIFIED";
-const PUNCH_DB_NAME="BP_Attendance_Queue", PUNCH_STORE="punches";
+const PUNCH_DB_NAME="BP_Attendance_Queue_TEST_V2", PUNCH_STORE="punches"; // TEST V2: isolates old pending punches
 let scanner=null,scannerRunning=false,busy=false,callbackCounter=0,forceRegistration=false,pendingDeviceId="",adminToken="",syncBusy=false;
 let selectedPunchAction=localStorage.getItem("BP_SELECTED_PUNCH_ACTION")||"PUNCH";
 function setPunchAction(a){selectedPunchAction=a==="FINAL_OUT"?"FINAL_OUT":"PUNCH";localStorage.setItem("BP_SELECTED_PUNCH_ACTION",selectedPunchAction);document.getElementById("normalPunchBtn").className=selectedPunchAction==="PUNCH"?"":"secondary";document.getElementById("finalPunchBtn").className=selectedPunchAction==="FINAL_OUT"?"":"secondary";document.getElementById("actionHint").textContent=selectedPunchAction==="FINAL_OUT"?"FINAL OUT: aaj ki duty permanently close hogi.":"IN / OUT: pehla IN, phir break ke liye OUT aur wapas aane par IN.";}
